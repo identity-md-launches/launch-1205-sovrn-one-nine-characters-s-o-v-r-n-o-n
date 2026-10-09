@@ -1,24 +1,51 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {SystemBase} from "./SystemBase.sol";
-import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
-import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {PoolRouter} from "./PoolRouter.sol";
 import {SovrnHook} from "../src/SovrnHook.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
-import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
-import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
+import {ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol";
 
-/// @dev During the opening decay only the launch factory (this test contract) may add liquidity, except inside the
-///      pool's initializing transaction. This closes the IMD-only-range route around the opening buy fee.
+/// @dev Plays the launch factory: initializes the pool and, in the same call, seeds it through another contract
+///      (the "outsider" router), as a factory that delegates seeding would.
+contract AtomicOpener {
+    function open(IPoolManager m, PoolRouter seeder, PoolKey memory key, uint160 price, ModifyLiquidityParams memory p)
+        external
+    {
+        ERC20(Currency.unwrap(key.currency0)).approve(address(seeder), type(uint256).max);
+        ERC20(Currency.unwrap(key.currency1)).approve(address(seeder), type(uint256).max);
+        m.initialize(key, price);
+        seeder.liquidity(key, p);
+    }
+
+    function addLater(PoolRouter seeder, PoolKey memory key, ModifyLiquidityParams memory p) external {
+        seeder.liquidity(key, p);
+    }
+}
+
+/// @dev During the opening decay only the launch factory may add liquidity, plus anyone inside the pool's
+///      initializing transaction. This closes the IMD-only-range route around the opening buy fee. In the fixture
+///      the router is the factory; `outsider` is any other contract.
 contract LiquidityLockTest is SystemBase {
     using PoolIdLibrary for PoolKey;
 
+    PoolRouter internal outsider;
+
     function setUp() public {
-        // _system(true) seeds through a router in the initializing transaction, which must be allowed.
         _system(true);
+        outsider = new PoolRouter(manager);
+        token.approve(address(outsider), type(uint256).max);
+        imd.approve(address(outsider), type(uint256).max);
+        vm.startPrank(ALICE);
+        token.approve(address(outsider), type(uint256).max);
+        imd.approve(address(outsider), type(uint256).max);
+        vm.stopPrank();
     }
 
     /// @dev A range holding only IMD, sitting beside the price on the side sellers push toward.
@@ -28,39 +55,43 @@ contract LiquidityLockTest is SystemBase {
             : ModifyLiquidityParams(166200, 184200, 1e21, bytes32(0));
     }
 
-    function test_seedingInTheInitializingTransactionByAnyRouterWorked() public view {
-        // setUp initialized the pool and seeded 1e22 liquidity through a router that is not the factory.
-        assertEq(block.timestamp, hook.openedAt());
+    function test_theFactorySeededThePool() public view {
+        assertEq(hook.factory(), address(router));
         assertGt(StateLibrary.getLiquidity(manager, key.toId()), 0);
     }
 
-    function test_laterTransactionInTheOpeningSecondCannotAdd() public {
-        // setUp seeded in the initializing transaction. A later transaction with the same timestamp is not exempt.
+    function test_othersCannotAddInTheOpeningSecondEither() public {
+        // A later transaction with the very same timestamp gets no exemption.
         assertEq(block.timestamp, hook.openedAt());
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
         vm.prank(ALICE);
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
     }
 
     function test_othersCannotAddLiquidityDuringTheDecay() public {
         vm.warp(hook.openedAt() + 1);
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
         vm.warp(hook.openedAt() + hook.DECAY() - 1);
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
         vm.prank(ALICE);
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
+    }
+
+    function test_theFactoryCanAddDuringTheDecay() public {
+        vm.warp(hook.openedAt() + 5 minutes);
+        router.liquidity(key, ModifyLiquidityParams(-60, 60, 1e18, bytes32(0)));
     }
 
     function test_anyoneCanAddOnceTheDecayIsOver() public {
         vm.warp(hook.openedAt() + hook.DECAY());
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
         vm.prank(ALICE);
-        router.liquidity(key, ModifyLiquidityParams(-60, 60, 1e18, bytes32(0)));
+        outsider.liquidity(key, ModifyLiquidityParams(-60, 60, 1e18, bytes32(0)));
     }
 
     function test_removingLiquidityIsNeverBlocked() public {
@@ -68,36 +99,55 @@ contract LiquidityLockTest is SystemBase {
         router.liquidity(key, ModifyLiquidityParams(-887220, 887220, -1e18, bytes32(0)));
     }
 
-    function test_factoryCanAddDuringTheDecay() public {
-        vm.warp(hook.openedAt() + 5 minutes);
-        ModifyLiquidityParams memory p = ModifyLiquidityParams(-60, 60, 1e18, bytes32(0));
-        ERC20(address(token)).approve(address(this), type(uint256).max);
-        manager.unlock(abi.encode(p));
-    }
-
-    function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        require(msg.sender == address(manager));
-        ModifyLiquidityParams memory p = abi.decode(data, (ModifyLiquidityParams));
-        (BalanceDelta d,) = manager.modifyLiquidity(key, p, "");
-        _pay(key.currency0, d.amount0());
-        _pay(key.currency1, d.amount1());
-        return "";
-    }
-
-    function _pay(Currency c, int128 amount) private {
-        if (amount >= 0) return;
-        manager.sync(c);
-        ERC20(Currency.unwrap(c)).transfer(address(manager), uint256(uint128(-amount)));
-        manager.settle();
-    }
-
-    function test_bypassNoLongerPaysLessThanTheBuyFee() public {
+    function test_bypassDoesNotWork() public {
         // The old exploit: add an IMD-only range, let a seller push SVO in, end up with SVO and no buy fee.
         vm.warp(hook.openedAt() + 1);
         uint256 before = _vaultIMD();
         vm.expectRevert();
-        router.liquidity(key, _imdOnlyRange());
+        outsider.liquidity(key, _imdOnlyRange());
         assertEq(_vaultIMD(), before);
+    }
+}
+
+/// @dev The exemption covers the initializing transaction only: a factory that seeds through another contract in
+///      the same call works (setUp), and a later transaction through the same contract is locked out (the tests).
+contract AtomicOpenTest is SystemBase {
+    using PoolIdLibrary for PoolKey;
+
+    PoolRouter internal seeder;
+    AtomicOpener internal opener;
+    SovrnHook internal h;
+    PoolKey internal k;
+    ModifyLiquidityParams internal range = ModifyLiquidityParams(-887220, 887220, 1e20, bytes32(0));
+
+    function setUp() public {
+        _system(true);
+        seeder = new PoolRouter(manager);
+        opener = new AtomicOpener();
+        address at = address(uint160(0xe8cc));
+        deployCodeTo("SovrnHook.sol:SovrnHook", abi.encode(IPoolManager(address(manager)), token, address(opener)), at);
+        h = SovrnHook(payable(at));
+        k = key;
+        k.hooks = IHooks(at);
+        token.transfer(address(opener), 1_000_000 ether);
+        imd.transfer(address(opener), 10 ether);
+        opener.open(manager, seeder, k, _orient(START_PRICE), range);
+    }
+
+    function test_seedingThroughAnotherContractInTheInitializingCallWorked() public view {
+        assertGt(StateLibrary.getLiquidity(manager, k.toId()), 0);
+        assertEq(h.openedAt(), block.timestamp);
+    }
+
+    function test_aLaterTransactionThroughTheSameContractIsLockedOut() public {
+        vm.expectRevert();
+        opener.addLater(seeder, k, range);
+    }
+}
+
+contract AtomicOpenReversedTest is AtomicOpenTest {
+    function _imdIsCurrency0() internal pure override returns (bool) {
+        return false;
     }
 }
 

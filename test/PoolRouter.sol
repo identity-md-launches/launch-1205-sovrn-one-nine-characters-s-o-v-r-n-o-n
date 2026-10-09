@@ -14,6 +14,12 @@ contract PoolRouter {
         manager = m;
     }
 
+    /// @dev Lets the router act as the hook's launch factory in tests: initialize and add liquidity both come from the
+    ///      factory address, so no test depends on how a forge version scopes transient storage between calls.
+    function initialize(PoolKey memory key, uint160 price) external {
+        manager.initialize(key, price);
+    }
+
     function trade(PoolKey memory key, SwapParams memory params) external payable returns (BalanceDelta d) {
         d = abi.decode(manager.unlock(abi.encode(msg.sender, key, true, abi.encode(params))), (BalanceDelta));
         _refund();

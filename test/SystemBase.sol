@@ -53,16 +53,17 @@ abstract contract SystemBase is Test {
         address tokenAt = _imdIsCurrency0() ? TOKEN_ABOVE_IMD : TOKEN_BELOW_IMD;
         deployCodeTo("SovrnToken.sol:SovrnToken", "", tokenAt);
         token = SovrnToken(tokenAt);
+        // The router is the launch factory: it initializes the pool and adds liquidity, as the real factory does.
+        router = new PoolRouter(manager);
         address at = address(uint160(0x28cc));
-        deployCodeTo("SovrnHook.sol:SovrnHook", abi.encode(IPoolManager(address(manager)), token, address(this)), at);
+        deployCodeTo("SovrnHook.sol:SovrnHook", abi.encode(IPoolManager(address(manager)), token, address(router)), at);
         hook = SovrnHook(payable(at));
         vault = hook.vault();
         assertEq(hook.imdIsCurrency0(), _imdIsCurrency0());
         key = _imdIsCurrency0()
             ? PoolKey(Currency.wrap(IMD_ADDR), Currency.wrap(address(token)), 12500, 60, IHooks(at))
             : PoolKey(Currency.wrap(address(token)), Currency.wrap(IMD_ADDR), 12500, 60, IHooks(at));
-        manager.initialize(key, _orient(initialPrice));
-        router = new PoolRouter(manager);
+        router.initialize(key, _orient(initialPrice));
         token.approve(address(router), type(uint256).max);
         imd.approve(address(router), type(uint256).max);
         token.transfer(ALICE, 10_000_000 ether);
