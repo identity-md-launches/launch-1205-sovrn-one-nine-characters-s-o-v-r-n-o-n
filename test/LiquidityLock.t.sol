@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 import {SystemBase} from "./SystemBase.sol";
+import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
+import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {SovrnHook} from "../src/SovrnHook.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
@@ -9,11 +11,13 @@ import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol";
 
-/// @dev During the opening decay only the launch factory (this test contract) may add liquidity, except in the
-///      pool's opening block. This closes the IMD-only-range route around the opening buy fee.
+/// @dev During the opening decay only the launch factory (this test contract) may add liquidity, except inside the
+///      pool's initializing transaction. This closes the IMD-only-range route around the opening buy fee.
 contract LiquidityLockTest is SystemBase {
+    using PoolIdLibrary for PoolKey;
+
     function setUp() public {
-        // _system(true) seeds through a router in the opening block, which must be allowed.
+        // _system(true) seeds through a router in the initializing transaction, which must be allowed.
         _system(true);
     }
 
@@ -24,8 +28,20 @@ contract LiquidityLockTest is SystemBase {
             : ModifyLiquidityParams(166200, 184200, 1e21, bytes32(0));
     }
 
-    function test_openingBlockSeedingByAnyRouterWorks() public view {
+    function test_seedingInTheInitializingTransactionByAnyRouterWorked() public view {
+        // setUp initialized the pool and seeded 1e22 liquidity through a router that is not the factory.
         assertEq(block.timestamp, hook.openedAt());
+        assertGt(StateLibrary.getLiquidity(manager, key.toId()), 0);
+    }
+
+    function test_laterTransactionInTheOpeningSecondCannotAdd() public {
+        // setUp seeded in the initializing transaction. A later transaction with the same timestamp is not exempt.
+        assertEq(block.timestamp, hook.openedAt());
+        vm.expectRevert();
+        router.liquidity(key, _imdOnlyRange());
+        vm.prank(ALICE);
+        vm.expectRevert();
+        router.liquidity(key, _imdOnlyRange());
     }
 
     function test_othersCannotAddLiquidityDuringTheDecay() public {

@@ -47,6 +47,8 @@ contract RevisionBoundariesTest is SystemBase {
 
     function setUp() public {
         _systemAtPrice(false, LAUNCH_PRICE, 0);
+        // Seed in setUp: the hook only lets the factory or the initializing transaction add liquidity in the first hour.
+        _addRange();
     }
 
     /// @dev Single-sided SVO range just below the start price (mirrored when IMD is currency1).
@@ -86,7 +88,6 @@ contract RevisionBoundariesTest is SystemBase {
     }
 
     function test_strayClaimsDoNotDivertRecordedFeeRedemption() public {
-        _addRange();
         _trade(true, -0.001 ether);
         assertEq(hook.claimFees(), 0.0005 ether);
         UnsolicitedDepositRouter pusher = _pusher(1 ether);
@@ -133,7 +134,6 @@ contract RevisionBoundariesTest is SystemBase {
     }
 
     function test_hooklessPoolBypassesTheHookFee() public {
-        _addRange();
         PoolKey memory hookless = PoolKey(key.currency0, key.currency1, 3000, 60, IHooks(address(0)));
         vm.prank(ALICE);
         manager.initialize(hookless, _orient(LAUNCH_PRICE));

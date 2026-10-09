@@ -25,6 +25,9 @@ contract SovrnHook {
     /// @notice True when IMD is the pool's currency0 (its address is lower than the token's).
     bool public immutable imdIsCurrency0;
     LifeForceVault public immutable vault;
+    /// @dev Transient flag set while the initializing transaction runs, so seeding in that same transaction (by any
+    ///      contract) may add liquidity. It is cleared by the EVM at the end of the transaction.
+    bytes32 private constant OPENING_TX = keccak256("sovrn.hook.openingTx");
     uint256 public openedAt;
     bool public initialized;
     int24 public tickSpacing;
@@ -110,22 +113,29 @@ contract SovrnHook {
         initialized = true;
         tickSpacing = key.tickSpacing;
         openedAt = block.timestamp;
+        bytes32 slot = OPENING_TX;
+        assembly {
+            tstore(slot, 1)
+        }
         emit PoolOpened(block.timestamp);
         return IHooks.beforeInitialize.selector;
     }
 
-    /// @notice During the opening decay only the launch factory may add liquidity (plus anyone in the pool's opening
-    ///         block, so an atomic seeding transaction works whichever contract performs it). An IMD-only range
-    ///         placed beside the price would otherwise turn IMD into SVO through sell flow and skip the buy fee.
+    /// @notice During the opening decay only the launch factory may add liquidity, plus anyone inside the pool's
+    ///         initializing transaction (so an atomic seeding works whichever contract performs it). An IMD-only
+    ///         range placed beside the price would otherwise turn IMD into SVO through sell flow and skip the buy fee.
     function beforeAddLiquidity(address sender, PoolKey calldata key, ModifyLiquidityParams calldata, bytes calldata)
         external
         onlyManager
         returns (bytes4)
     {
         _checkPool(key);
-        if (sender != factory && block.timestamp != openedAt && block.timestamp < openedAt + DECAY) {
-            revert LiquidityLocked();
+        bool openingTx;
+        bytes32 slot = OPENING_TX;
+        assembly {
+            openingTx := tload(slot)
         }
+        if (sender != factory && !openingTx && block.timestamp < openedAt + DECAY) revert LiquidityLocked();
         return IHooks.beforeAddLiquidity.selector;
     }
 
