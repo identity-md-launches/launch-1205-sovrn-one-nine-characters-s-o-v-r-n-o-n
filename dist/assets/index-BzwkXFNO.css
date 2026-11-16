@@ -1,0 +1,36 @@
+/* Self-hosted fonts, replacing the Google Fonts stylesheet of the approved index.html.
+   Audiowide 400: the wordmark and the "SVO" heading. Rubik 400/500/600: everything else.
+   One face per weight, Latin subset (it covers every character on the page). The per-subset
+   fontsource files carry no unicode-range, so adding a second subset would replace this one.
+   font-display: swap, as Google's &display=swap requested. *//* audiowide-latin-400-normal */
+@font-face {
+  font-family: 'Audiowide';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./audiowide-latin-400-normal-6GFCX7ni.woff2) format('woff2'), url(./audiowide-latin-400-normal-D6mHIfnv.woff) format('woff');
+}
+/* rubik-latin-400-normal */
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./rubik-latin-400-normal-j0pmKyiQ.woff2) format('woff2'), url(./rubik-latin-400-normal-BV1Ho3GG.woff) format('woff');
+}
+/* rubik-latin-500-normal */
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(./rubik-latin-500-normal-1os41rQk.woff2) format('woff2'), url(./rubik-latin-500-normal-LZYVHeqz.woff) format('woff');
+}
+/* rubik-latin-600-normal */
+@font-face {
+  font-family: 'Rubik';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(./rubik-latin-600-normal-7iWW07_k.woff2) format('woff2'), url(./rubik-latin-600-normal-Bd1rsTk4.woff) format('woff');
+}
